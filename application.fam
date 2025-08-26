@@ -1,0 +1,13 @@
+App(
+    appid="apple_ble_spam",
+    name="Apple BLE Spam",
+    apptype=FlipperAppType.EXTERNAL,
+    requires=[
+        "gui",
+        "notification",
+        "furi_hal_bt",
+        "furi_hal_random",
+    ],
+    entry_point="apple_ble_spam_app_main",
+    fap_category="Bluetooth",
+)
