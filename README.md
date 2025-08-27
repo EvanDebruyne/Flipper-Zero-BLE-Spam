@@ -10,6 +10,17 @@ A Flipper Zero application that demonstrates various Apple BLE advertisement typ
 - **Random MAC Addresses**: Generates unique identifiers for each session
 - **iOS 17 Crash Test**: Includes experimental crash payload
 
+## Attack Vectors
+
+1. **AirDrop Spam** - Triggers "Someone is trying to share with you" popups
+2. **Find My Spam** - Triggers Find My device detection notifications
+3. **AirPods Spam** - Triggers AirPods pairing popups
+4. **Number Transfer** - Triggers "Transfer your number" prompts
+5. **Watch Pairing** - Triggers Apple Watch pairing requests
+6. **TV Pairing** - Triggers Apple TV pairing popups
+7. **Remote Pairing** - Triggers Apple Remote pairing requests
+8. **HomePod Setup** - Triggers HomePod setup notifications
+
 ## Project Structure
 
 ```
@@ -29,6 +40,7 @@ AppleBLEDemo/
 - Flipper Zero with Xtreme Firmware (XFW) or compatible custom firmware
 - Development environment with ARM GCC toolchain
 - Flipper Zero SDK
+- Firmware version 7+ (API 86.0+)
 
 ## Building
 
