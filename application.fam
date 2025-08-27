@@ -1,13 +1,16 @@
+# For details & more options, see documentation/AppManifests.md in firmware repo
+
 App(
-    appid="apple_ble_spam",
-    name="Apple BLE Spam",
+    appid="apple_ble_spam",  # Must be unique
+    name="Apple BLE Spam",  # Displayed in menus
     apptype=FlipperAppType.EXTERNAL,
-    requires=[
-        "gui",
-        "notification",
-        "furi_hal_bt",
-        "furi_hal_random",
-    ],
-    entry_point="apple_ble_spam_app_main",
-    fap_category="Bluetooth",
+    entry_point="apple_ble_spam_app",
+    stack_size=2 * 1024,
+    fap_category="Tools",
+    fap_version="1.0",
+    fap_icon="apple_ble_spam.png",  # 10x10 1-bit PNG
+    fap_description="Apple BLE Spam Demo - Test various Apple BLE advertisement types",
+    fap_author="Your Name",
+    fap_weburl="https://github.com/yourusername/AppleBLEDemo",
+    fap_icon_assets="images",  # Image assets to compile for this application
 )

