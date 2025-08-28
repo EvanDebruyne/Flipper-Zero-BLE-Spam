@@ -6,59 +6,8 @@
 #include <furi_hal_random.h>
 #include <extra_beacon.h>
 #include "apple_ble_spam_icons.h"
-
-// Continuity protocol definitions (included directly to avoid linking issues)
-typedef enum {
-    ContinuityTypeAirDrop = 0x05,
-    ContinuityTypeProximityPair = 0x07,
-    ContinuityTypeAirplayTarget = 0x09,
-    ContinuityTypeHandoff = 0x0C,
-    ContinuityTypeTetheringSource = 0x0E,
-    ContinuityTypeNearbyAction = 0x0F,
-    ContinuityTypeNearbyInfo = 0x10,
-    ContinuityTypeCustomCrash,
-    ContinuityTypeCount,
-} ContinuityType;
-
-typedef enum {
-    PayloadModeRandom,
-    PayloadModeValue,
-    PayloadModeBruteforce,
-} PayloadMode;
-
-typedef struct {
-    uint8_t counter;
-    uint32_t value;
-    uint8_t size;
-} Bruteforce;
-
-typedef struct {
-    ContinuityType type;
-    union {
-        struct {
-            uint16_t model;
-            uint8_t color;
-            uint8_t prefix;
-        } proximity_pair;
-        struct {
-            uint8_t action;
-            uint8_t flags;
-        } nearby_action;
-    } data;
-} ContinuityCfg;
-
-typedef struct {
-    bool random_mac;
-    PayloadMode mode;
-    Bruteforce bruteforce;
-    ContinuityCfg continuity;
-} Payload;
-
-typedef struct {
-    const char* title;
-    const char* text;
-    Payload payload;
-} Attack;
+#include "lib/_protocols.h"
+#include "lib/continuity.h"
 
 // Continuity functions (included directly)
 const char* continuity_get_type_name(ContinuityType type) {
@@ -77,7 +26,7 @@ const char* continuity_get_type_name(ContinuityType type) {
 
 // Working packet generation from the functional version
 static void make_continuity_packet(uint8_t* _size, uint8_t** _packet, Payload* payload) {
-    ContinuityCfg* cfg = payload ? &payload->cfg.continuity : NULL;
+    ContinuityCfg* cfg = payload ? &payload->continuity : NULL;
 
     ContinuityType type;
     if(cfg && cfg->type != 0x00) {
@@ -216,6 +165,19 @@ static void make_continuity_packet(uint8_t* _size, uint8_t** _packet, Payload* p
     *_size = size;
     *_packet = packet;
 }
+
+// Protocol implementation for Apple Continuity
+static const char* continuity_get_name(void* payload) {
+    Payload* p = (Payload*)payload;
+    return continuity_get_type_name(p->continuity.type);
+}
+
+// Apple Continuity protocol definition
+const Protocol protocol_continuity = {
+    .name = "Apple Continuity",
+    .make_packet = (ProtocolMakePacket)make_continuity_packet,
+    .get_name = continuity_get_name,
+};
 
 // Payload definitions for different Apple BLE spam types
 static Attack attacks[] = {
@@ -681,7 +643,7 @@ int32_t apple_ble_spam_app(void* p) {
                 if(advertising) stop_adv(state);
                 state->delay--;
                 if(advertising) start_adv(state);
-            }
+                }
             break;
         case InputKeyLeft:
             if(state->index > PAGE_MIN) {
