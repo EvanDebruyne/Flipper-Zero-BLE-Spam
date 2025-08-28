@@ -1,34 +1,30 @@
-# Apple BLE Spam Demo
+# Apple BLE Spam
 
-A Flipper Zero application that demonstrates various Apple BLE advertisement types for testing and research purposes.
+A simplified Flipper Zero application that sends optimized Apple BLE Nearby Action advertisements for testing and research purposes.
 
 ## Features
 
-- **Multiple Apple BLE Types**: AirPods, AirTags, Apple TV, iPhone setup, and more
-- **Custom HCI Implementation**: Bypasses standard BLE stack for direct control
-- **Adjustable Timing**: Configurable advertisement intervals
+- **Single Optimized Attack**: Focuses on the most effective Nearby Action spam
+- **Random Action Cycling**: Automatically cycles through different working action types
+- **Adjustable Timing**: Configurable advertisement intervals (20ms to 5 seconds)
 - **Random MAC Addresses**: Generates unique identifiers for each session
-- **iOS 17 Crash Test**: Includes experimental crash payload
+- **Clean Codebase**: Removed unused code and simplified structure
 
-## Attack Vectors
+## How It Works
 
-1. **AirDrop Spam** - Triggers "Someone is trying to share with you" popups
-2. **Find My Spam** - Triggers Find My device detection notifications
-3. **AirPods Spam** - Triggers AirPods pairing popups
-4. **Number Transfer** - Triggers "Transfer your number" prompts
-5. **Watch Pairing** - Triggers Apple Watch pairing requests
-6. **TV Pairing** - Triggers Apple TV pairing popups
-7. **Remote Pairing** - Triggers Apple Remote pairing requests
-8. **HomePod Setup** - Triggers HomePod setup notifications
+This app sends **Apple Continuity protocol** BLE advertisements that trigger various popups on nearby Apple devices:
+
+- **AirDrop requests** - "Someone is trying to share with you"
+- **Apple TV connections** - "Join This AppleTV?" prompts
+- **iPhone setup** - "Setup New iPhone" modals
+- **Phone number transfer** - "Transfer your number" prompts
+- **Mobile backup** - Various backup and sync notifications
 
 ## Project Structure
 
 ```
 AppleBLEDemo/
 ├── apple_ble_spam.c          # Main application file
-├── lib/continuity/
-│   ├── continuity.h          # Continuity protocol definitions
-│   └── continuity.c          # Packet generation logic
 ├── apple_ble_spam_icons.h    # Icon definitions
 ├── application.fap           # Application manifest
 ├── Makefile                  # Build configuration
@@ -44,20 +40,19 @@ AppleBLEDemo/
 
 ## Building
 
-### Option 1: Using Makefile
+### Using Makefile
 ```bash
 make clean
 make all
 ```
 
-### Option 2: Manual Build
+### Manual Build
 ```bash
 # Create build directory
 mkdir -p build
 
-# Compile with proper includes
-gcc -Ilib/continuity -o build/AppleBLEDemo.elf \
-    apple_ble_spam.c lib/continuity/continuity.c
+# Compile
+gcc -o build/AppleBLEDemo.elf apple_ble_spam.c
 
 # Convert to FAP format
 objcopy -O binary build/AppleBLEDemo.elf AppleBLEDemo.fap
@@ -72,89 +67,62 @@ objcopy -O binary build/AppleBLEDemo.elf AppleBLEDemo.fap
 ## Usage
 
 1. **Launch the app** from the Flipper Zero apps menu
-2. **Navigate** through different BLE spam types using Left/Right buttons
-3. **Select** a payload type and press OK to start advertising
-4. **Adjust timing** using Up/Down buttons (20ms to 5 seconds)
-5. **Stop** advertising by pressing OK again
-
-## Available Payloads
-
-### Nearby Actions
-- **Transfer Phone Number**: Triggers "Transfer your number" popup
-- **Setup New iPhone**: Shows iPhone setup modal
-- **AppleTV AutoFill**: Banner notification for Apple TV
-- **AppleTV Connecting**: Modal for TV connection
-
-### Proximity Pairs
-- **AirPods/AirPods Pro**: Headphone pairing popups
-- **AirTag**: Find My device detection
-- **Beats Headphones**: Various headphone models
-
-### Special
-- **iOS 17 Crash**: Experimental crash payload (use with caution)
-- **Random Actions**: Cycles through different nearby actions
-- **Random Pairs**: Cycles through different proximity pairs
+2. **Press OK** to start sending BLE spam
+3. **Adjust timing** using Up/Down buttons (20ms to 5 seconds)
+4. **Stop** by pressing OK again
 
 ## Technical Details
 
 ### BLE Implementation
-This app uses **custom HCI commands** instead of the standard Flipper BLE API:
+Uses the **extra_beacon API** for direct BLE control:
 
-- `aci_gap_additional_beacon_start()`: Starts custom advertising
-- `aci_gap_additional_beacon_set_data()`: Sets advertisement data
-- `aci_gap_additional_beacon_stop()`: Stops advertising
-
-### Memory Scanning
-The app scans Flipper memory to find the correct HCI function addresses for different firmware versions.
+- `furi_hal_bt_extra_beacon_start()`: Starts custom advertising
+- `furi_hal_bt_extra_beacon_set_data()`: Sets advertisement data
+- `furi_hal_bt_extra_beacon_stop()`: Stops advertising
 
 ### Packet Structure
-Each payload type follows Apple's Continuity protocol:
-- **Length byte**: Packet size
-- **Type byte**: Continuity message type
-- **Flags**: Behavior modifiers
-- **Data**: Specific payload information
+Each payload follows Apple's Continuity protocol:
+- **Length byte**: Packet size (27 bytes)
+- **Type byte**: Continuity message type (0x0F = Nearby Action)
+- **Flags**: Behavior modifiers (0xC0 = standard, 0x40 = glitched)
+- **Action**: Specific action type (0x13, 0x27, 0x20, 0x09, 0x02, 0x0B)
 - **Apple Company ID**: 0x004C (little endian)
+
+### Working Action Types
+- **0x13**: AirDrop requests
+- **0x27**: Apple TV connections
+- **0x20**: "Join This AppleTV?" prompts
+- **0x09**: iPhone setup modals
+- **0x02**: Phone number transfer
+- **0x0B**: Mobile backup notifications
 
 ## Troubleshooting
 
 ### No BLE Notifications
 1. **Check distance**: Must be within 1 meter of target device
 2. **Verify firmware**: Ensure you're using Xtreme Firmware or compatible
-3. **Check logs**: Look for error messages in the Flipper console
-4. **Try different payloads**: Some work better than others
+3. **Try different delays**: 20ms usually works best
+4. **Check device state**: Some actions require unlocked devices
 
 ### Build Errors
-1. **Missing includes**: Ensure `lib/continuity` directory exists
-2. **Toolchain**: Verify ARM GCC is properly installed
-3. **SDK**: Check Flipper Zero SDK installation
-
-### Runtime Crashes
-1. **Memory issues**: Some payloads may cause instability
-2. **Firmware compatibility**: Try updating to latest XFW
-3. **Reset device**: Power cycle the Flipper Zero
+1. **Missing SDK**: Verify Flipper Zero SDK installation
+2. **Toolchain**: Check ARM GCC installation
+3. **Dependencies**: Ensure `extra_beacon` requirement is met
 
 ## Safety Notes
 
 ⚠️ **Important Warnings**:
 
-- **iOS 17 Crash**: May cause target devices to freeze or crash
 - **Legal Use**: Only test on your own devices or with explicit permission
 - **Research Purpose**: This tool is for security research and testing
 - **No Malicious Use**: Do not use to harass or attack others
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
+- **Device Stability**: Some payloads may cause temporary device responses
 
 ## Credits
 
 - **Original Implementation**: Based on work by WillyJL and ECTO-1A
 - **Continuity Protocol**: Research by furiousMAC
-- **Flipper Integration**: Adapted for Flipper Zero platform
+- **Simplification**: Cleaned up and optimized by Ethan DeBruyne
 
 ## License
 

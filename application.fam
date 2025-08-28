@@ -7,9 +7,9 @@ App(
     entry_point="apple_ble_spam_app",
     stack_size=2 * 1024,
     fap_category="Bluetooth",
-    fap_version="1.2",
+    fap_version="2.0",
     fap_icon="apple_ble_spam.png",  # 10x10 1-bit PNG
-    fap_description="Apple BLE Spam Demo - Test various Apple BLE advertisement types",
+    fap_description="Apple BLE Spam - Single optimized Nearby Action spammer",
     fap_author="Ethan DeBruyne",
     fap_weburl="https://github.com/EvanDebruyne/Flipper-Zero-BLE-Spam",
     fap_icon_assets="images",  # Image assets to compile for this application
