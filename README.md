@@ -64,50 +64,7 @@ objcopy -O binary build/AppleBLEDemo.elf AppleBLEDemo.fap
 2. Copy the resulting `.fap` file to your Flipper Zero's `apps` directory
 3. Restart your Flipper Zero or refresh the apps menu
 
-## Usage
 
-1. **Launch the app** from the Flipper Zero apps menu
-2. **Press OK** to start sending BLE spam
-3. **Adjust timing** using Up/Down buttons (20ms to 5 seconds)
-4. **Stop** by pressing OK again
-
-## Technical Details
-
-### BLE Implementation
-Uses the **extra_beacon API** for direct BLE control:
-
-- `furi_hal_bt_extra_beacon_start()`: Starts custom advertising
-- `furi_hal_bt_extra_beacon_set_data()`: Sets advertisement data
-- `furi_hal_bt_extra_beacon_stop()`: Stops advertising
-
-### Packet Structure
-Each payload follows Apple's Continuity protocol:
-- **Length byte**: Packet size (27 bytes)
-- **Type byte**: Continuity message type (0x0F = Nearby Action)
-- **Flags**: Behavior modifiers (0xC0 = standard, 0x40 = glitched)
-- **Action**: Specific action type (0x13, 0x27, 0x20, 0x09, 0x02, 0x0B)
-- **Apple Company ID**: 0x004C (little endian)
-
-### Working Action Types
-- **0x13**: AirDrop requests
-- **0x27**: Apple TV connections
-- **0x20**: "Join This AppleTV?" prompts
-- **0x09**: iPhone setup modals
-- **0x02**: Phone number transfer
-- **0x0B**: Mobile backup notifications
-
-## Troubleshooting
-
-### No BLE Notifications
-1. **Check distance**: Must be within 1 meter of target device
-2. **Verify firmware**: Ensure you're using Xtreme Firmware or compatible
-3. **Try different delays**: 20ms usually works best
-4. **Check device state**: Some actions require unlocked devices
-
-### Build Errors
-1. **Missing SDK**: Verify Flipper Zero SDK installation
-2. **Toolchain**: Check ARM GCC installation
-3. **Dependencies**: Ensure `extra_beacon` requirement is met
 
 ## Safety Notes
 
@@ -122,7 +79,7 @@ Each payload follows Apple's Continuity protocol:
 
 - **Original Implementation**: Based on work by WillyJL and ECTO-1A
 - **Continuity Protocol**: Research by furiousMAC
-- **Simplification**: Cleaned up and optimized by Ethan DeBruyne
+- **Simplification**: Tested and optimized by EDeBruyne
 
 ## License
 
