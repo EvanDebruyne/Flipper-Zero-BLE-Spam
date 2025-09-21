@@ -66,14 +66,10 @@ objcopy -O binary build/AppleBLEDemo.elf AppleBLEDemo.fap
 
 
 
-## Safety Notes
-
-⚠️ **Important Warnings**:
 
 - **Legal Use**: Only test on your own devices or with explicit permission
 - **Research Purpose**: This tool is for security research and testing
-- **No Malicious Use**: Do not use to harass or attack others
-- **Device Stability**: Some payloads may cause temporary device responses
+
 
 ## Credits
 
