@@ -74,8 +74,7 @@ objcopy -O binary build/AppleBLEDemo.elf AppleBLEDemo.fap
 ## Credits
 
 - **Original Implementation**: Based on work by WillyJL and ECTO-1A
-- **Continuity Protocol**: Research by furiousMAC
-- **Simplification**: Tested and optimized by EDeBruyne
+
 
 ## License
 
