@@ -1,5 +1,5 @@
 # Update 2026
-Functionality is not great on newest Iphones. It was a fun project building off and learning about flipper modding and BLE signals, mainly from WillyJL and ECTO-1A. I may try to update soon too work on the newest apple devices.
+Functionality is not great on newest Iphones. It was a fun project building off and learning about flipper modding and BLE signals, mainly from WillyJL and ECTO-1A. I may try to update soon to work on the newest apple devices.
 
 
 # Apple BLE Spam
