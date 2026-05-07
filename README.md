@@ -1,3 +1,7 @@
+# Update 2026
+Functionality is not great on newest Iphones. It was a fun project building off and learning about flipper modding and BLE signals, mainly from WillyJL and ECTO-1A. I may try to update soon too work on the newest apple devices.
+
+
 # Apple BLE Spam
 
 A simplified Flipper Zero application that sends optimized Apple BLE Nearby Action advertisements for testing and research purposes.
